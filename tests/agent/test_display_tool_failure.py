@@ -22,7 +22,6 @@ class TestTrimError:
     def test_short_message_unchanged(self):
         assert _trim_error("nope") == "nope"
 
-
     def test_long_message_truncated_to_cap(self):
         msg = "x" * 200
         trimmed = _trim_error(msg)
@@ -32,7 +31,6 @@ class TestTrimError:
     def test_file_not_found_path_collapsed_to_filename(self):
         long_path = "File not found: /home/teknium/.hermes/hermes-agent/very/deep/path/foo.py"
         assert _trim_error(long_path) == "File not found: foo.py"
-
 
 
 
@@ -56,7 +54,6 @@ class TestDetectToolFailureTerminal:
         # Trimmed to the cap, in brackets
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
-
 
 
 
@@ -91,16 +88,51 @@ class TestDetectToolFailureStructured:
         assert suffix == " [File not found: missing.py]"
 
 
-
     def test_successful_result_not_flagged(self):
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
 
+class TestDetectToolFailureSuccessWithFailedKey:
+    """Regression: a successful JSON payload that merely carries a 'failed'
+    key must NOT be misread as a failure by the raw-string heuristic.
+
+    The old fallback grepped the serialized text for '"failed"' and flagged
+    mnemosyne apply_pending's success response
+    {"applied": [...], "failed": [], "applied_count": 2, "failed_count": 0}
+    as an error. The model then retried an already-succeeded step, driving a
+    tool-loop storm (see incident 20260902_081727_18295975).
+    """
+
+    def test_apply_pending_success_empty_failed_list_not_flagged(self):
+        result = json.dumps({
+            "applied": ["b75cc4e4", "95c8af3a"],
+            "failed": [],
+            "applied_count": 2,
+            "failed_count": 0,
+        })
+        assert _detect_tool_failure("mnemosyne_apply_pending", result) == (False, "")
+
+    def test_nonempty_failed_list_is_flagged(self):
+        result = json.dumps({
+            "applied": ["abc"],
+            "failed": ["def: memory full"],
+            "applied_count": 1,
+            "failed_count": 1,
+        })
+        is_failure, suffix = _detect_tool_failure("mnemosyne_apply_pending", result)
+        assert is_failure is True
+        assert "memory full" in suffix
+
+    def test_success_false_still_flagged(self):
+        result = json.dumps({"success": False, "error": "boom"})
+        is_failure, suffix = _detect_tool_failure("anything", result)
+        assert is_failure is True
+        assert "boom" in suffix
+
 
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""
-
 
 
 
@@ -118,4 +150,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-

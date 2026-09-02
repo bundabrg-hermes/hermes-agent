@@ -1365,6 +1365,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, " [full]"
 
     # Structured error in JSON result (any tool that surfaces {"error": ...}).
+    err = None
     if isinstance(data, dict):
         err = data.get("error") or data.get("message")
         if err and (data.get("success") is False or "error" in data):
@@ -1374,6 +1375,22 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.
     if not isinstance(result, str):
+        return False, ""
+    # Structured JSON object: trust explicit fields over raw-string grepping.
+    # The old heuristic grepped the serialized text for "error"/"failed" and
+    # false-positived on successful payloads that merely carry those keys,
+    # e.g. mnemosyne apply_pending {"applied": [...], "failed": [],
+    # "failed_count": 0}. Marking those as failures makes the model retry a
+    # step that already succeeded, driving tool-loop storms.
+    if isinstance(data, dict):
+        if data.get("success") is False:
+            return True, f" [{_trim_error(err) if err else '[failed]'}]"
+        for key in ("failed", "errors", "failures"):
+            val = data.get(key)
+            if isinstance(val, (list, tuple)) and val:
+                return True, f" [{_trim_error(str(val[0]))}]"
+            if isinstance(val, str) and val:
+                return True, f" [{_trim_error(val)}]"
         return False, ""
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
