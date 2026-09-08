@@ -21,6 +21,7 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    progress_max_entries: int = 4  # rolling window size (only when progress_grouping == "rolling")
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None

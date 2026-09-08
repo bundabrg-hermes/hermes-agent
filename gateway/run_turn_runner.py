@@ -406,6 +406,11 @@ class TurnRunner:
 
     # ── editable progress bubbles (progress-queue drain) ────────────────────────────────────
 
+    # Rolling grouping: the label rendered above the visible window once earlier logical
+    # entries have rolled off. It is a display-only annotation — it is never counted against
+    # tool_progress_max_entries and is never delivered as a standalone message.
+    ROLLING_OMISSION_LABEL = "… earlier tool activity omitted …"
+
     @dataclasses.dataclass
     class _ProgressEditState:
         """Mutable editable-bubble state shared by ``send_progress_messages`` and its helpers."""
@@ -416,6 +421,10 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # Rolling grouping: window size for progress_lines (None = no window, "accumulate").
+        # ``_omitted_lines`` counts how many logical entries have rolled off the visible window.
+        max_entries: Optional[int] = None
+        _omitted_lines: int = 0
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -439,6 +448,8 @@ class TurnRunner:
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            # "rolling" keeps one edited bubble but only shows the newest N logical entries.
+            max_entries=ctx.progress_max_entries if ctx.progress_grouping == "rolling" else None,
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
@@ -450,9 +461,13 @@ class TurnRunner:
             kwargs["metadata"] = ctx._progress_metadata
         return await st.adapter.edit_message(**kwargs)
 
-    @staticmethod
-    def _progress_text(lines: list) -> str:
-        return "\n".join(str(line) for line in lines)
+    def _progress_text(self, st, lines: list) -> str:
+        """Render the visible lines; in rolling mode the omission label is prefixed on its own
+        line once entries have rolled off (it is not counted against the window)."""
+        text = "\n".join(str(line) for line in lines)
+        if st.max_entries is not None and st._omitted_lines > 0:
+            text = f"{self.ROLLING_OMISSION_LABEL}\n{text}" if text else self.ROLLING_OMISSION_LABEL
+        return text
 
     def _split_progress_groups(self, st, lines: list) -> list[list]:
         """Partition progress lines into platform-sized editable bubbles."""
@@ -460,7 +475,7 @@ class TurnRunner:
         current: list = []
         for line in lines:
             candidate = current + [line]
-            if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
+            if current and st._progress_len_fn(self._progress_text(st, candidate)) > st._PROGRESS_TEXT_LIMIT:
                 groups.append(current)
                 candidate = [line]
             current = candidate
@@ -482,11 +497,22 @@ class TurnRunner:
         """
         if not st.progress_lines or not st.can_edit:
             return False
+        # Rolling: keep ONE bubble — trim the oldest logical entries until the buffer fits
+        # (or is empty), then let the caller edit the same message. No continuation bubbles.
+        if st.max_entries is not None:
+            if st._progress_len_fn(self._progress_text(st, st.progress_lines)) <= st._PROGRESS_TEXT_LIMIT:
+                return False
+            while st.progress_lines and st._progress_len_fn(
+                self._progress_text(st, st.progress_lines)
+            ) > st._PROGRESS_TEXT_LIMIT:
+                st.progress_lines.pop(0)
+                st._omitted_lines += 1
+            return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
             return False
         if st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, groups[0]))
             if not result.success:
                 if getattr(result, "retryable", False):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
@@ -496,7 +522,7 @@ class TurnRunner:
                 return False
             groups = groups[1:]
         for group in groups:
-            result = await self._send_progress_text(st, self._progress_text(group))
+            result = await self._send_progress_text(st, self._progress_text(st, group))
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
         # The newest continuation is the only mutable bubble: keep just its lines so later
@@ -512,6 +538,7 @@ class TurnRunner:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
+        st._omitted_lines = 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     def _progress_absorb(self, st, raw) -> Any:
@@ -519,16 +546,34 @@ class TurnRunner:
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
+                # No visible entry to fold into; start the buffer (a rolling window may
+                # immediately roll this placeholder off — that entry is then omitted).
+                st.progress_lines.append(base_msg)
                 return base_msg
             st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            self._progress_rolling_trim(st)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
+        self._progress_rolling_trim(st)
         return raw
+
+    def _progress_rolling_trim(self, st) -> None:
+        """Enforce the rolling window (logical entries, not characters).
+
+        In "rolling" mode keep only the newest ``max_entries`` entries in the edited bubble;
+        each evicted entry increments ``_omitted_lines`` so the omission label renders.
+        Dedup updates modify the newest entry in place and never consume an extra slot.
+        """
+        if st.max_entries is None:
+            return
+        if len(st.progress_lines) > st.max_entries:
+            st._omitted_lines += len(st.progress_lines) - st.max_entries
+            del st.progress_lines[: len(st.progress_lines) - st.max_entries]
 
     async def _flush_progress_edit(self, st) -> None:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -562,7 +607,7 @@ class TurnRunner:
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
         if st.can_edit and st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
             if result.success:
                 return True
             if getattr(result, "retryable", False):
@@ -575,7 +620,7 @@ class TurnRunner:
             await self._send_progress_text(st, msg)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        result = await self._send_progress_text(st, self._progress_text(st, st.progress_lines) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True

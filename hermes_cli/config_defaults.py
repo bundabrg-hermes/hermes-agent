@@ -859,9 +859,15 @@ DEFAULT_CONFIG = {
         # CLI-only: cumulative turn output tokens on the live spinner ("· ↓ 1.2k tok").
         "spinner_token_flow": True,
         # Gateway tool-progress grouping where edits are supported: "accumulate" edits one bubble |
-        # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
+        # "separate" one message per tool (noisier) | "rolling" edits one bubble but keeps only the
+        # newest tool_progress_max_entries entries (bounded bubble for long tool sessions).
+        # Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
+        # Rolling tool-progress window: max logical entries shown in the one edited bubble
+        # (only used when tool_progress_grouping == "rolling"). Per-platform:
+        # display.platforms.<platform>.tool_progress_max_entries.
+        "tool_progress_max_entries": 4,
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".

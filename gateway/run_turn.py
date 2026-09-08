@@ -2611,8 +2611,10 @@ class GatewayTurnMixin:
             for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
         )
         progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
-        # "accumulate" (edit one bubble) or "separate" (one msg per tool)
+        # "accumulate" (edit one bubble), "separate" (one msg per tool) or "rolling"
+        # (edit one bubble, keep only the newest tool_progress_max_entries entries).
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        progress_max_entries = int(resolve_display_setting(user_config, platform_key, "tool_progress_max_entries", 4) or 4)
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
@@ -2678,6 +2680,7 @@ class GatewayTurnMixin:
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
+            progress_max_entries=progress_max_entries,
             _display_surface_mode=_display_surface_mode,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
@@ -2691,7 +2694,7 @@ class GatewayTurnMixin:
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
+        "progress_grouping", "progress_max_entries", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
     )

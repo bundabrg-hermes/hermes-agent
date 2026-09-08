@@ -432,9 +432,37 @@ display:
   # How progress is grouped on platforms that support message editing:
   #   accumulate (default) — edit one bubble in place as tools run
   #   separate             — send one message per tool (pre-v0.9 style; noisier)
+  #   rolling              — edit one bubble in place, but keep only the newest
+  #                          `tool_progress_max_entries` entries so long tool
+  #                          sessions don't grow the bubble forever
   # Only applies where tool_progress is already enabled.
-  tool_progress_grouping: accumulate   # accumulate | separate
+  tool_progress_grouping: accumulate   # accumulate | separate | rolling
+  tool_progress_max_entries: 4         # rolling window size (only used by `rolling`)
 ```
+
+### `rolling` mode — a bounded progress bubble
+
+For long tool-heavy sessions (many tool calls in a row), `accumulate` keeps editing a single
+bubble that grows until it overflows into new messages. `rolling` caps that bubble instead:
+
+```yaml
+display:
+  platforms:
+    whatsapp:
+      tool_progress_grouping: rolling
+      tool_progress_max_entries: 4
+```
+
+Hermes still uses **one** editable progress message — the same message ID is edited in place,
+never deleted and recreated. Only the **displayed** window is bounded: as each new tool runs,
+the oldest entry rolls off the top so at most `tool_progress_max_entries` logical entries are
+visible. Once anything has rolled off, a small `… earlier tool activity omitted` line is shown
+above the window (it does not consume one of the configured entries).
+
+This is a **presentation-only** change. It does not remove or truncate tool results from the
+agent/model context, and it does not touch `tool_output.max_bytes` or any other tool-output
+limit. `tool_progress_max_entries` has no effect unless `tool_progress_grouping: rolling`.
+`accumulate` and `separate` behave exactly as before.
 
 ### `log` mode — audit file instead of chat messages
 
