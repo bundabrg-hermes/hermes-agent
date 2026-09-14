@@ -75,7 +75,7 @@ class TestCompactionWiring(unittest.TestCase):
                    return_value={"newly_added"}) as m:
             changed = _refresh_agent_tool_definitions(agent)
         self.assertTrue(changed)
-        m.assert_called_once_with(agent, content_aware=True)
+        m.assert_called_once_with(agent, content_aware=True, preserve_prefix=True)
 
     def test_commit_path_calls_helper_and_survives_failure(self):
         """The commit boundary invokes the refresh and a raising refresh

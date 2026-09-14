@@ -157,11 +157,32 @@ def is_compaction_progress_status(text: str | None) -> bool:
 
 def _refresh_agent_tool_definitions(agent) -> bool:
     """Rebuild agent.tools at the compaction commit boundary (the only moment config reaches a forever-session's
-    frozen tool schemas; the prompt cache is already invalid). Returns True when tools were added."""
+    frozen tool schemas; the prompt cache is already invalid). preserve_prefix=True keeps the publish
+    non-destructive: a still-registered tool is carried forward, so a stale get_tool_definitions memo
+    (check_fn verdicts are only TTL-cached in the registry, and a memo hit bypasses the TTL entirely)
+    cannot shrink the live tool set at the boundary. Returns True when tools were added."""
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
-    added = refresh_agent_mcp_tools(agent, content_aware=True)
+    pre_names = {t.get("function", {}).get("name", "") for t in (getattr(agent, "tools", None) or [])}
+    pre_names.discard("")
+    added = refresh_agent_mcp_tools(agent, content_aware=True, preserve_prefix=True)
     if added:
         logger.info("Compaction tool refresh added tools: %s", sorted(added))
+    post_names = {t.get("function", {}).get("name", "") for t in (getattr(agent, "tools", None) or [])}
+    post_names.discard("")
+    if len(post_names) < len(pre_names):
+        # Diagnostic for the 2026-09-14 "tools lost for one turn" investigation (fix applied here,
+        # Option B intentionally NOT applied): a shrink at this boundary means the rebuild served
+        # fewer names than the live set had. Reserved follow-up: calling reprobe_tool_availability()
+        # before the refresh clears the check_fn verdict cache AND the get_tool_definitions memo so
+        # the rebuild re-probes instead of replaying a stale verdict. If this warning reappears,
+        # test that hatch.
+        logger.warning(
+            "Compaction tool refresh shrank tools: %d -> %d; enabled_toolsets=%s; "
+            "dropped=%s; added=%s (2026-09-14 tool-loss investigation; Option B "
+            "reprobe_tool_availability() reserved as follow-up)",
+            len(pre_names), len(post_names), getattr(agent, "enabled_toolsets", None),
+            sorted(pre_names - post_names), sorted(added or set()),
+        )
     return bool(added)
 
 
