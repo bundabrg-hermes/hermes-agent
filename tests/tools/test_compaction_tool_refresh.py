@@ -64,6 +64,19 @@ class TestContentAwareRefresh(unittest.TestCase):
         self._refresh(agent, "same text", content_aware=True)
         self.assertIs(agent.tools, before)
 
+    def test_compaction_boundary_refresh_preserves_prefix(self):
+        """The compaction commit boundary must publish non-destructively: a stale
+        get_tool_definitions memo (2026-09-14 tool-loss investigation) must not be
+        able to shrink the live tool set. Pin the delegation signature."""
+        from agent.conversation_compression import _refresh_agent_tool_definitions
+
+        agent = self._agent_with("same text")
+        with patch("tools.mcp_tool_agent.refresh_agent_mcp_tools",
+                   return_value={"newly_added"}) as m:
+            changed = _refresh_agent_tool_definitions(agent)
+        self.assertTrue(changed)
+        m.assert_called_once_with(agent, content_aware=True, preserve_prefix=True)
+
 
 
 
